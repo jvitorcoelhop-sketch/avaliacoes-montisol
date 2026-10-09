@@ -107,18 +107,43 @@ function renderCodigo(){
     <p style="font-size:13px;color:var(--muted)">Cole abaixo o <b>código de acesso</b> que o RH enviou para você (começa com MONTISOL-). Ele abre apenas as avaliações que são suas.</p>
     <div class="field" style="margin-top:14px"><label>Código de acesso</label>
       <textarea id="cod" placeholder="Cole aqui o código recebido do RH"></textarea></div>
-    <div style="margin-top:14px"><button class="btn primary" onclick="entrar()" style="width:auto">Acessar minhas avaliações</button></div>
+    <div style="margin-top:14px"><button class="btn primary" onclick="entrar(this)" style="width:auto">Acessar minhas avaliações</button></div>
   </div></div>`;
 }
-function entrar(){
+async function entrar(btn){
   let raw=(document.getElementById("cod").value||"").trim();
   if(!raw){ alert("Cole o código de acesso que o RH enviou para você."); return; }
   raw=raw.replace(/^.*MONTISOL-/s,"").replace(/\s+/g,"").trim();
+  let p;
   try{
-    const p=JSON.parse(b64d(raw));
+    p=JSON.parse(b64d(raw));
     if(p.k!=="acesso"||!p.nome||!Array.isArray(p.t)) throw 0;
-    state.avNome=p.nome; state.avEhDiretor=!!p.dir; state.tarefas=p.t; state.concl={}; render();
-  }catch(e){ alert("Código inválido. Verifique se você copiou o código inteiro (começa com MONTISOL-) e cole novamente."); }
+  }catch(e){ alert("Código inválido. Verifique se você copiou o código inteiro (começa com MONTISOL-) e cole novamente."); return; }
+  state.avNome=p.nome; state.avEhDiretor=!!p.dir; state.tarefas=p.t; state.concl={};
+  // AJUSTE 3: bloqueia reuso — consulta o Supabase se este avaliador já enviou TODAS as suas tarefas
+  if(btn){ btn.disabled=true; btn.textContent="Verificando..."; }
+  try{
+    const r=await fetch(SUPABASE_URL+"/rest/v1/respostas?select=cargo_id,modo,avaliador&avaliador=eq."+encodeURIComponent(p.nome)+"&ciclo=eq.2026",{
+      headers:{ "apikey":SUPABASE_KEY, "Authorization":"Bearer "+SUPABASE_KEY }
+    });
+    if(r.status>=200 && r.status<300){
+      const enviadas=await r.json();
+      // marca como concluídas as tarefas que já constam no banco
+      p.t.forEach((t,i)=>{
+        const ja = enviadas.some(e=>e.cargo_id===t.cargoId && e.modo===t.tipo);
+        if(ja) state.concl[i]=true;
+      });
+      const todas = p.t.length>0 && p.t.every((t,i)=>state.concl[i]);
+      if(todas){
+        alert("Este código já foi utilizado — todas as suas avaliações já foram enviadas. Se precisar refazer, fale com o RH.");
+        state.avNome=""; state.avEhDiretor=false; state.tarefas=null; state.concl={};
+        if(btn){ btn.disabled=false; btn.textContent="Acessar minhas avaliações"; }
+        render(); return;
+      }
+    }
+  }catch(e){ /* sem internet: deixa entrar normalmente, o backup por código cobre */ }
+  if(btn){ btn.disabled=false; btn.textContent="Acessar minhas avaliações"; }
+  render();
 }
 function sair(){ if(Object.keys(state.concl).length && !confirm("Sair limpa o progresso. Continuar?")) return;
   state.avNome="";state.avEhDiretor=false;state.tarefas=null;state.mode=null;state.concl={}; render(); }
@@ -138,7 +163,11 @@ function renderPainel(){
 }
 function abrir(i){ const t=state.tarefas[i]; if(!t) return;
   state.tarefaIdx=i; state.cargoId=t.cargoId; state.mode=t.tipo; state.scores={}; state.comments={};
-  state.nomeAval=t.tipo==="auto"?state.avNome:""; render(); }
+  // AJUSTE 2: nome do avaliado automático (autoavaliação = próprio nome; gestor com nome na tarefa, se houver)
+  state.nomeAval = t.tipo==="auto" ? state.avNome : (t.avaliado||"");
+  // AJUSTE 1: data automática = hoje
+  state.data = new Date().toISOString().slice(0,10);
+  render(); }
 function voltarPainel(){ if(Object.keys(state.scores).length && !confirm("Sair sem gerar o código perde o preenchimento. Continuar?")) return;
   state.mode=null; state.scores={}; state.comments={}; render(); }
 
@@ -217,9 +246,16 @@ function mostrarSucesso(nome){
   const ov=document.createElement("div"); ov.className="overlay";
   ov.innerHTML=`<div class="modal"><h3>Avaliação enviada ✓</h3>
     <div class="ok-badge">${rotOk}${quem}</div>
-    <p>Sua avaliação foi enviada ao RH com sucesso. Você já pode fechar esta janela.${ehEquipe?" Obrigado pela participação — sua resposta é anônima.":""}</p>
-    <div class="row"><button class="btn primary" style="width:auto" onclick="this.closest('.overlay').remove()">Fechar</button></div></div>`;
+    <p>Sua avaliação foi enviada ao RH com sucesso.${ehEquipe?" Obrigado pela participação — sua resposta é anônima.":""}</p>
+    <div class="row"><button class="btn primary" style="width:auto" onclick="concluirEVoltar()">Concluir</button></div></div>`;
   document.body.appendChild(ov);
+}
+/* AJUSTE 3: após enviar, volta à tela inicial de código (não ao painel de tarefas) */
+function concluirEVoltar(){
+  document.querySelectorAll(".overlay").forEach(o=>o.remove());
+  state.avNome=""; state.avEhDiretor=false; state.tarefas=null; state.mode=null;
+  state.concl={}; state.scores={}; state.comments={}; state.nomeAval="";
+  render();
 }
 function mostrarErro(code, motivo){
   const ov=document.createElement("div"); ov.className="overlay";
