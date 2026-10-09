@@ -85,7 +85,7 @@ const MIN_ASC=3;
 /* ===== Conexão Supabase (automação em tempo real) ===== */
 const SUPABASE_URL="https://baqtoneostutoxxceojh.supabase.co";
 const SUPABASE_KEY="sb_publishable_PO8WW_7gk9_DLauLXU9zTA_XMfkB5H1";
-const state={avNome:"",avEhDiretor:false,tarefas:null,tarefaIdx:0,concl:{},mode:null,cargoId:null,nomeAval:"",data:"",scores:{},comments:{}};
+const state={tela:null,resultado:null,avNome:"",avEhDiretor:false,tarefas:null,tarefaIdx:0,concl:{},mode:null,cargoId:null,nomeAval:"",data:"",scores:{},comments:{}};
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function cargoById(id){ return CARGOS.find(c=>c.id===id); }
 function cargo(){ return cargoById(state.cargoId)||CARGOS[0]; }
@@ -97,12 +97,16 @@ function b64d(s){ const bin=atob(s); const b=new Uint8Array(bin.length); for(let
 
 function render(){
   const app=document.getElementById("app");
+  if(!state.tela){ app.innerHTML=renderEscolhaInicial(); return; }
+  if(state.tela==="resultado"){ app.innerHTML = state.resultado?renderResultado():renderConsulta(); return; }
+  // tela avaliar
   if(!state.tarefas){ app.innerHTML=renderCodigo(); return; }
   if(!state.mode){ app.innerHTML=renderPainel(); return; }
   app.innerHTML=renderForm();
 }
 function renderCodigo(){
   return `<div class="card"><div class="card-body">
+    <div style="margin-bottom:10px"><button class="btn ghost" onclick="voltarInicio()" style="padding:6px 12px">◀ Início</button></div>
     <h2 style="font-size:17px;margin-bottom:4px">Acesso à sua avaliação</h2>
     <p style="font-size:13px;color:var(--muted)">Cole abaixo o <b>código de acesso</b> que o RH enviou para você (começa com MONTISOL-). Ele abre apenas as avaliações que são suas.</p>
     <div class="field" style="margin-top:14px"><label>Código de acesso</label>
@@ -275,6 +279,120 @@ function baixarRes(){ const t=document.getElementById("rescode"); const blob=new
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
   const slug=(state.nomeAval||cargo().cargo).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-zA-Z0-9]+/g,"_");
   a.download="resposta_"+slug+".txt"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }
+
+
+/* ============================================================
+   VER MEU RESULTADO (consulta do avaliado)
+   ============================================================ */
+function b64e(s){ const b=new TextEncoder().encode(s); let bin=""; b.forEach(x=>bin+=String.fromCharCode(x)); return btoa(bin); }
+
+function renderEscolhaInicial(){
+  return `<div class="card"><div class="card-body" style="text-align:center;padding:26px">
+    <h2 style="font-size:18px;margin-bottom:6px">Avaliação de Desempenho</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:20px">Montisol · Gente e Gestão · Eleve-se</p>
+    <div class="gate" style="max-width:520px;margin:0 auto">
+      <button class="gate-card" onclick="irAvaliar()"><span class="tag">Avaliar</span><h3>Fazer uma avaliação</h3><p>Cole o código de acesso que o RH enviou e preencha suas avaliações.</p></button>
+      <button class="gate-card" onclick="irResultado()"><span class="tag">Resultado</span><h3>Ver meu resultado</h3><p>Já foi avaliado? Cole o código de consulta para ver seu relatório — notas e plano de desenvolvimento.</p></button>
+    </div>
+  </div></div>`;
+}
+function irAvaliar(){ state.tela="avaliar"; render(); }
+function irResultado(){ state.tela="resultado"; render(); }
+function voltarInicio(){ state.tela=null; state.resultado=null; render(); }
+
+function renderConsulta(){
+  return `<div class="card"><div class="card-body">
+    <div style="margin-bottom:10px"><button class="btn ghost" onclick="voltarInicio()" style="padding:6px 12px">◀ Início</button></div>
+    <h2 style="font-size:17px;margin-bottom:4px">Ver meu resultado</h2>
+    <p style="font-size:13px;color:var(--muted)">Cole o <b>código de consulta</b> que o RH enviou (começa com RES-). Ele abre o seu relatório de avaliação.</p>
+    <div class="field" style="margin-top:14px"><label>Código de consulta</label>
+      <textarea id="rescod" placeholder="Cole aqui o código RES-..."></textarea></div>
+    <div style="margin-top:14px"><button class="btn primary" onclick="consultarResultado(this)" style="width:auto">Ver resultado</button></div>
+  </div></div>`;
+}
+
+async function consultarResultado(btn){
+  let cod=(document.getElementById("rescod").value||"").trim().replace(/\s+/g,"");
+  if(!cod){ alert("Cole o código de consulta."); return; }
+  if(btn){ btn.disabled=true; btn.textContent="Buscando..."; }
+  try{
+    const r=await fetch(SUPABASE_URL+"/rest/v1/rpc/consultar_resultado",{
+      method:"POST", headers:{ "apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY,"Content-Type":"application/json" },
+      body:JSON.stringify({ p_codigo:cod }) });
+    if(r.status<200||r.status>=300) throw "Erro ao consultar.";
+    const arr=await r.json();
+    if(!arr.length){ alert("Código não encontrado, ou seu resultado ainda não foi liberado pelo RH."); return; }
+    state.resultado=arr[0]; render();
+  }catch(e){ alert(typeof e==="string"?e:"Falha na conexão. Tente novamente."); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent="Ver resultado"; } }
+}
+
+function renderResultado(){
+  const res=state.resultado; const d=res.dados||{};
+  const comps=d.comps||[]; const pdi=d.pdi||[];
+  const svg=radarSVG(comps);
+  const dataFmt=d.data?d.data.split("-").reverse().join("/"):"";
+  let h=`<div style="margin-bottom:12px"><button class="btn ghost" onclick="voltarInicio()" style="padding:6px 12px">◀ Início</button></div>
+  <div class="card"><div class="card-body">
+    <h2 style="font-size:17px;color:var(--brand)">Seu Resultado — ${esc(res.pessoa)}</h2>
+    <p style="font-size:12.5px;color:var(--muted)">${esc(res.cargo_nome||d.cargo||"")}${res.gestor?(" · Gestor: "+esc(res.gestor)):""}${dataFmt?(" · "+dataFmt):""} · Ciclo ${esc(res.ciclo||"2026")}</p>
+    <div class="grid" style="margin-top:14px">
+      <div class="card" style="margin:0"><div class="card-body" style="text-align:center"><div style="font-family:'Archivo';font-size:26px;font-weight:800;color:var(--brand)">${(d.mediaGeral||0).toFixed(1)}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase">Média Geral</div></div></div>
+      <div class="card" style="margin:0"><div class="card-body" style="text-align:center"><div style="font-family:'Archivo';font-size:26px;font-weight:800;color:var(--green)">${comps.filter(c=>c.avg>=4).length}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase">Pontos Fortes</div></div></div>
+      <div class="card" style="margin:0"><div class="card-body" style="text-align:center"><div style="font-family:'Archivo';font-size:26px;font-weight:800;color:var(--amber)">${comps.filter(c=>c.avg<4).length}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase">A Desenvolver</div></div></div>
+    </div>
+  </div></div>
+
+  <div class="card"><div class="card-head"><h2>Perfil de competências</h2></div><div class="card-body" style="text-align:center">
+    ${svg}
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">O polígono mostra sua média final em cada competência (escala 1 a 5).</div>
+  </div></div>
+
+  <div class="card"><div class="card-head"><h2>Detalhamento</h2><div class="sub">Suas três fontes de avaliação, com transparência total</div></div><div class="card-body">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+    <thead><tr style="background:var(--brand);color:#fff"><th style="padding:7px 9px;text-align:left">Competência</th><th style="padding:7px;width:60px">Auto</th><th style="padding:7px;width:70px">Superior</th><th style="padding:7px;width:60px">Equipe</th><th style="padding:7px;width:55px">Final</th></tr></thead><tbody>
+    ${comps.map(c=>`<tr><td style="padding:7px 9px;border-bottom:1px solid var(--line)">${esc(c.nome)}</td>
+      <td style="padding:7px;text-align:center;border-bottom:1px solid var(--line);font-weight:700">${c.a!=null?c.a:"—"}</td>
+      <td style="padding:7px;text-align:center;border-bottom:1px solid var(--line);font-weight:700">${c.g!=null?c.g:"—"}</td>
+      <td style="padding:7px;text-align:center;border-bottom:1px solid var(--line);font-weight:700">${c.e!=null?c.e:"—"}</td>
+      <td style="padding:7px;text-align:center;border-bottom:1px solid var(--line);font-family:'Archivo';font-weight:800;color:var(--brand)">${c.avg.toFixed(1)}</td></tr>`).join("")}
+    </tbody></table>
+  </div></div>`;
+
+  if(pdi.length){
+    h+=`<div class="card"><div class="card-head"><h2>Seu Plano de Desenvolvimento (PDI)</h2></div><div class="card-body">
+    ${pdi.map(p=>`<div style="border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:8px;padding:12px;margin-bottom:10px;background:#FDFDFB">
+      <div style="font-weight:700;font-size:13.5px">${esc(p.comp)} <span style="font-weight:400;color:var(--muted);font-size:12px">(média ${p.avg.toFixed(1)})</span></div>
+      <div style="font-size:12.5px;color:var(--brand);background:var(--brand-soft);border-radius:6px;padding:8px 10px;margin-top:8px">${esc(p.acao)}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:6px">Prazo: ${p.prazo?p.prazo.split("-").reverse().join("/"):"a definir"} · Status: ${esc(p.status)}</div>
+    </div>`).join("")}
+    </div></div>`;
+  }
+  h+=`<div style="height:30px"></div>`;
+  return h;
+}
+
+/* radar SVG (mesma lógica do Painel Geral) */
+function radarSVG(comps){
+  const n=comps.length; if(n<3) return '<div style="font-size:11px;color:#5A6784">Radar disponível a partir de 3 competências.</div>';
+  const cx=160, cy=160, R=120, cxTot=320, cyTot=320;
+  const ang=i=>(-Math.PI/2)+(2*Math.PI*i/n);
+  const pt=(val,i)=>{ const r=R*(val/5); return [cx+r*Math.cos(ang(i)), cy+r*Math.sin(ang(i))]; };
+  let grid="";
+  for(let g=1;g<=5;g++){ const r=R*g/5; let pts="";
+    for(let i=0;i<n;i++){ const x=cx+r*Math.cos(ang(i)), y=cy+r*Math.sin(ang(i)); pts+=(i?"L":"M")+x.toFixed(1)+","+y.toFixed(1)+" "; }
+    grid+=`<path d="${pts}Z" fill="none" stroke="#DCE3F0" stroke-width="1"/>`; }
+  let eixos="",labels="";
+  for(let i=0;i<n;i++){ const x=cx+R*Math.cos(ang(i)), y=cy+R*Math.sin(ang(i));
+    eixos+=`<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#DCE3F0" stroke-width="1"/>`;
+    const lx=cx+(R+14)*Math.cos(ang(i)), ly=cy+(R+14)*Math.sin(ang(i));
+    const anchor = Math.abs(Math.cos(ang(i)))<0.3?"middle":(Math.cos(ang(i))>0?"start":"end");
+    const nome=comps[i].nome.length>18?comps[i].nome.slice(0,16)+"…":comps[i].nome;
+    labels+=`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="8" fill="#5A6784" text-anchor="${anchor}" dominant-baseline="middle">${esc(nome)}</text>`; }
+  let pts=""; for(let i=0;i<n;i++){ const [x,y]=pt(comps[i].avg,i); pts+=(i?"L":"M")+x.toFixed(1)+","+y.toFixed(1)+" "; }
+  const polMedia=`<path d="${pts}Z" fill="rgba(1,46,113,.12)" stroke="#012E71" stroke-width="2.5"/>`;
+  return `<svg viewBox="0 0 ${cxTot} ${cyTot}" width="300" height="300" style="max-width:100%">${grid}${eixos}${polMedia}${labels}<circle cx="${cx}" cy="${cy}" r="2" fill="#012E71"/></svg>`;
+}
 
 render();
 </script>
